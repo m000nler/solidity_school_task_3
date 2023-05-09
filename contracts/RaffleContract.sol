@@ -32,7 +32,7 @@ contract RaffleContract is
     struct Participant {
         address userAddress;
         uint256 depositAmount;
-        uint256 depositAmountInEth;
+        uint256 depositAmountInUsd;
         uint256 winningChance;
         IERC20 depositedToken;
     }
@@ -97,18 +97,13 @@ contract RaffleContract is
             "User has already deposited"
         );
 
-        (, int256 tokenInEth, , , ) = _allowedTokens[token].latestRoundData();
+        (, int256 tokenInUsd, , , ) = _allowedTokens[token].latestRoundData();
 
         _depositedParticipants[msg.sender] = true;
-        _totalDeposited += uint256(tokenInEth);
+        _totalDeposited += uint256(tokenInUsd);
         _participants.push(
-            Participant(msg.sender, amount, uint256(tokenInEth), 0, token)
+            Participant(msg.sender, amount, uint256(tokenInUsd), 0, token)
         );
-        address[] memory path = new address[](2);
-        path[0] = address(token);
-        path[1] = _weth;
-        uint256 amountInWeth = _router.getAmountsOut(amount, path)[1];
-        _totalWethDeposited += amountInWeth;
 
         SafeERC20.safeTransferFrom(
             token,
@@ -116,6 +111,19 @@ contract RaffleContract is
             address(this),
             amount
         );
+
+        address[] memory path = new address[](2);
+        path[0] = address(token);
+        path[1] = _weth;
+
+        uint256 amountInWeth = _router.swapExactTokensForTokens(
+            amount,
+            0,
+            path,
+            address(this),
+            block.timestamp + 15
+        )[1];
+        _totalWethDeposited += amountInWeth;
 
         emit Deposit(msg.sender, token, amount);
     }
@@ -184,7 +192,7 @@ contract RaffleContract is
 
     function _calculateWinningChances() private {
         for (uint256 i = 0; i < _participants.length; i++) {
-            uint256 chance = _participants[i].depositAmountInEth.mul(100).div(
+            uint256 chance = _participants[i].depositAmountInUsd.mul(100).div(
                 _totalDeposited
             );
             _participants[i].winningChance = chance;
