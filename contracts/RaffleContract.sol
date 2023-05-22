@@ -14,13 +14,12 @@ import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 
 import "./RaffleAccessControl.sol";
-import "./VRFConsumerBaseUpgradable.sol";
+import "./CustomVRFConsumerBaseV2.sol";
 
 contract RaffleContract is
     Initializable,
     OwnableUpgradeable,
-    RaffleAccessControl,
-    VRFConsumerBaseUpgradable
+    RaffleAccessControl
 {
     using SafeERC20 for ERC20;
     using SafeMath for uint256;
@@ -29,12 +28,9 @@ contract RaffleContract is
     IUniswapV2Router02 private _router;
     address private _weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
 
-    struct Participant {
-        address userAddress;
-        uint256 depositAmount;
-        uint256 depositAmountInUsd;
-        uint256 winningChance;
-        IERC20 depositedToken;
+    struct Entry {
+        address user;
+        uint256 depositedAmount;
     }
 
     struct AllowedToken {
@@ -42,7 +38,8 @@ contract RaffleContract is
         AggregatorV3Interface priceFeed;
     }
 
-    Participant[] private _participants;
+    uint256 public randomNumber;
+    Entry[] private _participants;
     mapping(IERC20 => AggregatorV3Interface) private _allowedTokens;
     mapping(address => bool) private _depositedParticipants;
     uint256 private _totalDeposited;
@@ -50,9 +47,7 @@ contract RaffleContract is
     uint256 private _currentRollId;
     bool private _rollStarted;
 
-    bytes32 public keyHash;
-    uint256 public fee;
-    uint256 public randomResult;
+    CustomVRFConsumerBaseV2 _consumer;
 
     uint256[15] private __gap;
 
@@ -67,22 +62,27 @@ contract RaffleContract is
 
     function initialize(
         AllowedToken[] memory allowedTokens,
+        CustomVRFConsumerBaseV2 consumer,
         address rollController,
-        address _vrfCoordinator,
-        address dexRouter,
-        address _link,
-        bytes32 _keyHash,
-        uint256 _fee
+        address dexRouter
     ) public initializer {
-        __VRFConsumerBase_init(_vrfCoordinator, _link);
+        __init(allowedTokens, consumer, rollController, dexRouter);
+    }
+
+    // solhint-disable private-vars-leading-underscore
+    function __init(
+        AllowedToken[] memory allowedTokens,
+        CustomVRFConsumerBaseV2 consumer,
+        address rollController,
+        address dexRouter
+    ) public onlyInitializing {
         __Ownable_init();
         _router = IUniswapV2Router02(dexRouter);
-        keyHash = _keyHash;
-        fee = _fee;
         for (uint256 i = 0; i < allowedTokens.length; i++) {
             _allowedTokens[allowedTokens[i].token] = allowedTokens[i].priceFeed;
         }
         _grantRole(ROLL_CONTROLLER_ROLE, rollController);
+        _consumer = consumer;
     }
 
     function deposit(IERC20 token, uint256 amount) public {
@@ -101,9 +101,6 @@ contract RaffleContract is
 
         _depositedParticipants[msg.sender] = true;
         _totalDeposited += uint256(tokenInUsd);
-        _participants.push(
-            Participant(msg.sender, amount, uint256(tokenInUsd), 0, token)
-        );
 
         SafeERC20.safeTransferFrom(
             token,
@@ -123,7 +120,21 @@ contract RaffleContract is
             address(this),
             block.timestamp + 15
         )[1];
+
         _totalWethDeposited += amountInWeth;
+
+        if (_participants[_participants.length].depositedAmount > 0) {
+            _participants.push(
+                Entry(
+                    msg.sender,
+                    amountInWeth +
+                        1 +
+                        _participants[_participants.length].depositedAmount
+                )
+            );
+        } else {
+            _participants.push(Entry(msg.sender, amountInWeth));
+        }
 
         emit Deposit(msg.sender, token, amount);
     }
@@ -142,37 +153,25 @@ contract RaffleContract is
         require(_rollStarted, "Roll hasn't started");
         require(_participants.length > 0, "No participants");
 
-        _calculateWinningChances();
-        _requestRandomness();
+        randomNumber = _consumer.randomNumber();
+        _consumer.changeLock(true);
 
-        uint256 firstRandom = randomResult;
-        _requestRandomness();
-
-        uint256 secondRandom = randomResult;
-        Participant memory winner;
+        Entry memory winner;
 
         for (uint256 i = 0; i < _participants.length; i++) {
-            if (
-                _participants[i].winningChance > firstRandom &&
-                _participants[i].winningChance < secondRandom &&
-                _participants[i].winningChance > winner.winningChance
-            ) {
+            if (_participants[i].depositedAmount >= randomNumber) {
                 winner = _participants[i];
+                break;
             }
         }
 
-        _rollStarted = false;
-        _totalWethDeposited = 0;
-        _totalDeposited = 0;
-        delete _participants;
-
-        IERC20(_weth).transfer(winner.userAddress, _totalWethDeposited);
+        IERC20(_weth).transfer(winner.user, _totalWethDeposited);
 
         emit RollEnded(
             _currentRollId,
             block.timestamp,
-            winner.userAddress,
-            winner.depositAmount
+            winner.user,
+            _totalWethDeposited
         );
 
         return true;
@@ -188,31 +187,5 @@ contract RaffleContract is
         );
         require(address(priceFeed) != address(0), "Price feed cannot be zero");
         _allowedTokens[token] = priceFeed;
-    }
-
-    function _calculateWinningChances() private {
-        for (uint256 i = 0; i < _participants.length; i++) {
-            uint256 chance = _participants[i].depositAmountInUsd.mul(100).div(
-                _totalDeposited
-            );
-            _participants[i].winningChance = chance;
-        }
-    }
-
-    // solhint-disable-next-line no-unused-vars, private-vars-leading-underscore
-    function fulfillRandomness(bytes32 requestId, uint256 randomness)
-        internal
-        override
-    {
-        randomResult = randomness.mod(100).add(1);
-    }
-
-    function _requestRandomness() private returns (bytes32) {
-        require(
-            LINK.balanceOf(address(this)) >= fee,
-            "Not enough LINK to fulfill request"
-        );
-
-        return requestRandomness(keyHash, fee);
     }
 }
