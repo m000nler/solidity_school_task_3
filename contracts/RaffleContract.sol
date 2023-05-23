@@ -96,6 +96,9 @@ contract RaffleContract is
             !_depositedParticipants[msg.sender],
             "User has already deposited"
         );
+        require(!_consumer.locked(), "Locked");
+
+        _consumer.changeLock(true);
 
         (, int256 tokenInUsd, , , ) = _allowedTokens[token].latestRoundData();
 
@@ -137,6 +140,8 @@ contract RaffleContract is
         }
 
         emit Deposit(msg.sender, token, amount);
+
+        _consumer.changeLock(false);
     }
 
     function startRoll() public onlyRole(ROLL_CONTROLLER_ROLE) returns (bool) {
@@ -152,6 +157,7 @@ contract RaffleContract is
     function endRoll() public onlyRole(ROLL_CONTROLLER_ROLE) returns (bool) {
         require(_rollStarted, "Roll hasn't started");
         require(_participants.length > 0, "No participants");
+        require(!_consumer.locked(), "Locked");
 
         randomNumber = _consumer.randomNumber();
         _consumer.changeLock(true);
@@ -173,6 +179,8 @@ contract RaffleContract is
             winner.user,
             _totalWethDeposited
         );
+
+        _consumer.changeLock(false);
 
         return true;
     }

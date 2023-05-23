@@ -11,7 +11,7 @@ contract CustomVRFConsumerBaseV2 is VRFConsumerBaseV2 {
     uint256 public randomNumber;
     uint256 private _maxValue;
 
-    bool private _locked;
+    bool public locked;
 
     constructor(
         address vrfCoordinator,
@@ -50,6 +50,6 @@ contract CustomVRFConsumerBaseV2 is VRFConsumerBaseV2 {
     }
 
     function changeLock(bool newLock) public {
-        _locked = newLock;
+        locked = newLock;
     }
 }
